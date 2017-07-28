@@ -1,11 +1,19 @@
 #define NUMSTEPS 4
 #define TOGGLE_IO        13  //Arduino pin to toggle in timer ISR
+#define TIMER_CLOCK_FREQ 2000000.0 //2MHz for /8 prescale from 16MHz
+#define TIMER_STEP 150;
+#define PRINT true
+#define TESTMODE true
+
+
+#include <SPI.h>         // needed for Arduino versions later than 0018
+#include <Ethernet.h>
+#include <EthernetUdp.h>         // UDP library from: bjoern@cs.stanford.edu 12/30/2008
 
 unsigned int latency;
-unsigned int sampleCount;
 unsigned char timerLoadValue;
 
-#define TIMER_CLOCK_FREQ 2000000.0 //2MHz for /8 prescale from 16MHz
+
 
 unsigned char SetupTimer2(float timeoutFrequency) {
   unsigned char result; //The value to load into the timer to control the timeout interval.
@@ -17,7 +25,18 @@ unsigned char SetupTimer2(float timeoutFrequency) {
   return (result);
 }
 
-#define TIMER_STEP 150;
+
+struct Fly
+{
+  char    sig[3];
+  float   pitch;
+  float   bank;
+  float   z;
+  byte    state;
+  byte    sum;
+
+};
+
 
 volatile long num = 0;
 
@@ -39,8 +58,8 @@ class LarStepper
     float v = 0.;
     float a = 100.;
     float cmd = 0;
-    float scale = 100;
-    float maxv = 100;
+    float scale = 100.;
+    float maxv = 100.;
     float minl = -1000000000000;
     float maxl = -1000000000000;
     float e = 0;
@@ -112,12 +131,21 @@ void LarStepper::update_freq()
 
 
 LarStepper st[4] = {
-  LarStepper(100., 1, 2, 3),
-  LarStepper(100., 4, 5, 6),
-  LarStepper(100., 7, 8, 9),
-  LarStepper(100., 7, 8, 9)
+  LarStepper(10., 1, 2, 3),
+  LarStepper(10., 4, 5, 6),
+  LarStepper(10., 7, 8, 9),
+  LarStepper(10., 7, 8, 9)
 };
 
+
+byte mac[] = {
+  0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0xED
+};
+IPAddress ip(10, 0, 1, 5);
+unsigned int localPort = 8888;      // local port to listen on
+char packetBuffer[UDP_TX_PACKET_MAX_SIZE];  //buffer to hold incoming packet,
+char  ReplyBuffer[] = "acknowledged";       // a string to send back
+EthernetUDP Udp;
 
 //Timer2 overflow interrupt vector handler
 ISR(TIMER2_OVF_vect) {
@@ -155,14 +183,23 @@ ISR(TIMER2_OVF_vect) {
 
 
 void setup() {
-  noInterrupts();
   Serial.begin(115200);
+
+  Ethernet.begin(mac, ip);
+  Udp.begin(localPort);
+
+  noInterrupts();
   timerLoadValue = SetupTimer2(80000);
   interrupts();
   st[0].cmd = 100;
+
+
 }
 
-long print_ = 0;
+long print__ = 0;
+bool print_;
+Fly *fly;
+
 void loop() {
   // put your main code here, to run repeatedly:
 
@@ -172,12 +209,17 @@ void loop() {
   {
     st[i].update_freq();
   }
+  print_ = false;
+  if (print__ < millis() && PRINT ) {
+    print__ = millis() + 400;
+    print_ = true;
+  }
 
-  if (print_ < millis() ) {
-    print_ = millis() + 400;
+  if (print_)
+  {Serial.println(latency);
     for (int i = 0; i < NUMSTEPS; i++)
     {
-      Serial.println(latency);
+      
       Serial.print(i);
       Serial.print(", ");
       Serial.print(st[i].cmd);
@@ -190,29 +232,60 @@ void loop() {
       Serial.println(", ");
     }
     Serial.println(", ");
-
-    /* Serial.println(latency);
-      Serial.print(", cmd");
-      Serial.print(st[0].cmd);
-      Serial.print(", t1 ");
-      Serial.print(st[0].t1);
-      Serial.print(", t");
-      Serial.print(st[0].t);
-      Serial.print(", p");
-      Serial.print(st[0].p);
-      Serial.print(", e");
-      Serial.print(st[0].e);
-      Serial.print(", v");
-      Serial.print(st[0].v);
-      Serial.print(", timer ");
-      Serial.print(st[0].timer);
-      Serial.print(", pos ");
-      Serial.println(st[0].pos);
-      Serial.print(", time ");
-      Serial.print(time_);
-      Serial.print(", period ");
-      Serial.println(period);*/
   }
+
+
+
+  if (TESTMODE) {
+      st[0].cmd = sin(0.001*float(millis())/40.*3.1415)*360;
+      st[1].cmd = cos(0.001*float(millis())/40.*3.1415)*360;
+    }
+  else {
+
+    int packetSize = Udp.parsePacket();
+    if (packetSize) {
+      // read the packet into packetBufffer
+      Udp.read(packetBuffer, UDP_TX_PACKET_MAX_SIZE);
+      fly = (Fly*)packetBuffer;
+      st[0].cmd = fly->pitch;
+      st[1].cmd = fly->bank;
+    }
+    if (print_)
+    {
+      Serial.println("Contents:");
+      Serial.println(fly->sig);
+      Serial.println(fly->pitch);
+      Serial.println(fly->bank);
+      Serial.println(fly->z);
+      Serial.println(fly->state);
+      Serial.println(fly->sum);
+      //    delay(100);
+    }
+  }
+
+
+  /* Serial.println(latency);
+    Serial.print(", cmd");
+    Serial.print(st[0].cmd);
+    Serial.print(", t1 ");
+    Serial.print(st[0].t1);
+    Serial.print(", t");
+    Serial.print(st[0].t);
+    Serial.print(", p");
+    Serial.print(st[0].p);
+    Serial.print(", e");
+    Serial.print(st[0].e);
+    Serial.print(", v");
+    Serial.print(st[0].v);
+    Serial.print(", timer ");
+    Serial.print(st[0].timer);
+    Serial.print(", pos ");
+    Serial.println(st[0].pos);
+    Serial.print(", time ");
+    Serial.print(time_);
+    Serial.print(", period ");
+    Serial.println(period);*/
+
 
 
 }
