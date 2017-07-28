@@ -62,7 +62,7 @@ class LarStepper
     volatile long timer;
     volatile long counter;
     volatile long home;
-    volatile long homing_dir;
+    volatile int homing_dir;
     volatile long pos = 0;
     volatile float v = 0.;
     float a = 100.;
@@ -75,6 +75,7 @@ class LarStepper
     float p = 0;
     float t = 0;
     float t1;
+    float module = 360.;
 };
 
 LarStepper::LarStepper(float _scale, int _step, int _dir, int _home)
@@ -96,12 +97,36 @@ void LarStepper::set_cmd(float c)
   if (c > maxl) cmd = maxl;
   else if (c < minl) cmd = minl;
   else cmd = c;
+  if (module > 0) {
+    cmd =  float( (long(cmd * 1000)) % 360000 )/1000 ;
+  }
 }
+
 
 void LarStepper::update_freq()
 {
   p = float(pos) / scale;
-  e = cmd - p;
+  // Get pos error
+  if (module > 0)
+  {
+    p = float(long(p * 1000)%360000)/1000;
+    float e1 = cmd - p + 360;
+    float e2 = cmd - p;
+    float e3 = cmd - p - 360;
+    if (abs(e1) < abs(e2))
+    {
+      if (abs(e1) < abs(e3)) e = e1;
+      else e = e3;
+    }
+    else
+    {
+      if (abs(e2) < abs(e3)) e = e2;
+      else e = e3;
+    }
+  }
+  else {
+    e = cmd - p;
+  }
 
   if (v * e < 0)
   {
