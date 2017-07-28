@@ -1,18 +1,29 @@
 #define NUMSTEPS 4
-#define TOGGLE_IO        13  //Arduino pin to toggle in timer ISR
-#define TIMER_CLOCK_FREQ 2000000.0 //2MHz for /8 prescale from 16MHz
-#define TIMER_STEP 150;
+#define TIMER_CLOCK_FREQ 2000000.0 //250kHz for /64 prescale from 16MHz
 #define PRINT true
 #define TESTMODE true
+#define TIMER_STEP 150
+#define STEP_TIME 160
 
 
 #include <SPI.h>         // needed for Arduino versions later than 0018
 #include <Ethernet.h>
 #include <EthernetUdp.h>         // UDP library from: bjoern@cs.stanford.edu 12/30/2008
 
+byte mac[] = {0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0xED};
+IPAddress ip(10, 0, 1, 5);
+unsigned int localPort = 8888;      // local port to listen on
+
+
 unsigned int latency;
 unsigned char timerLoadValue;
 
+long print__ = 0;
+bool print_;
+float period;
+long time_;
+char packetBuffer[UDP_TX_PACKET_MAX_SIZE];  //buffer to hold incoming packet,
+EthernetUDP Udp;
 
 
 unsigned char SetupTimer2(float timeoutFrequency) {
@@ -25,7 +36,6 @@ unsigned char SetupTimer2(float timeoutFrequency) {
   return (result);
 }
 
-
 struct Fly
 {
   char    sig[3];
@@ -36,9 +46,8 @@ struct Fly
   byte    sum;
 
 };
+Fly *fly;
 
-
-volatile long num = 0;
 
 class LarStepper
 {
@@ -55,7 +64,7 @@ class LarStepper
     volatile long home;
     volatile long homing_dir;
     volatile long pos = 0;
-    float v = 0.;
+    volatile float v = 0.;
     float a = 100.;
     float cmd = 0;
     float scale = 100.;
@@ -68,16 +77,13 @@ class LarStepper
     float t1;
 };
 
-
-
-
 LarStepper::LarStepper(float _scale, int _step, int _dir, int _home)
 {
   pos = 0;
-  step_pin = _step;
-  dir_pin = _dir;
+  step_pin = 1 << _step;
+  dir_pin = 1 << _dir;
   home = 0;
-  home_pin = _home;
+  home_pin = 1 << _home;
   homing_dir = 1;
   scale = _scale;
   pinMode(step_pin, OUTPUT);
@@ -85,16 +91,12 @@ LarStepper::LarStepper(float _scale, int _step, int _dir, int _home)
   pinMode(home_pin, INPUT);
 }
 
-
 void LarStepper::set_cmd(float c)
 {
   if (c > maxl) cmd = maxl;
   else if (c < minl) cmd = minl;
   else cmd = c;
 }
-
-float period;
-long time_;
 
 void LarStepper::update_freq()
 {
@@ -138,49 +140,38 @@ LarStepper st[4] = {
 };
 
 
-byte mac[] = {
-  0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0xED
-};
-IPAddress ip(10, 0, 1, 5);
-unsigned int localPort = 8888;      // local port to listen on
-char packetBuffer[UDP_TX_PACKET_MAX_SIZE];  //buffer to hold incoming packet,
-char  ReplyBuffer[] = "acknowledged";       // a string to send back
-EthernetUDP Udp;
-
+volatile int pins;
 //Timer2 overflow interrupt vector handler
 ISR(TIMER2_OVF_vect) {
-  num += 1;
-  if (num > 1000)  digitalWrite(13, !digitalRead(13));
-  num = num % 2000;
+  pins = PINB << 8 | PIND;
 
-  int pins = PORTD << 8 || PORTB;
+
   for (int i = 0; i < NUMSTEPS; i++)
   {
     st[i].counter += TIMER_STEP;
-    if (pins & 1 << st[i].step_pin ) {
-      pins &= (65535 - 1 << st[i].step_pin);
+    if (st[i].counter <= STEP_TIME ) {
+      pins |= st[i].step_pin;
     }
-    else if (st[i].counter >= st[i].timer) {
-      st[i].counter = st[i].counter % st[i].timer;
-      if (st[i].v > 0) st[i].pos += 1;
-      else st[i].pos -= 1;
-      pins |= 1 << st[i].step_pin;
+    else
+    {
+      pins &= 65535 - st[i].step_pin;
+      if (st[i].counter >= st[i].timer) {
+        st[i].counter = st[i].counter % st[i].timer;
+        if (st[i].v > 0) st[i].pos += 1;
+        else st[i].pos -= 1;
+        pins |= st[i].step_pin;
+      }
+
+      // DIR  TODO DIR Set time
+      if (st[i].v > 0) pins |= st[i].dir_pin;
+      else pins &= 65535 -  st[i].dir_pin;
     }
-    if (st[i].v > 0) pins |=  1 << st[i].step_pin;
-    else pins &= (65535 - 1 << st[i].step_pin);
   }
-  PORTB = pins;
-  PORTD = (PORTD & 192) | pins >> 8;
 
-
-  //Capture the current timer value. This is how much error we have
-  //due to interrupt latency and the work in this function
+  PORTD = pins;
+  PORTB = (PINB & 192) | (pins >> 8);
   latency = TCNT2;
-  //Reload the timer and correct for latency.  //Reload the timer and correct for latency.  //Reload the timer and correct for latency.
-  //TCNT2 = latency + timerLoadValue;
-
 }
-
 
 void setup() {
   Serial.begin(115200);
@@ -191,18 +182,10 @@ void setup() {
   noInterrupts();
   timerLoadValue = SetupTimer2(80000);
   interrupts();
-  st[0].cmd = 100;
-
-
 }
 
-long print__ = 0;
-bool print_;
-Fly *fly;
 
 void loop() {
-  // put your main code here, to run repeatedly:
-
   period = (micros() - time_) * 0.000001;
   time_ = micros();
   for  (int i = 0; i < NUMSTEPS; i++)
@@ -216,10 +199,15 @@ void loop() {
   }
 
   if (print_)
-  {Serial.println(latency);
+  {
+    Serial.println(latency);
+    Serial.println(pins, BIN);
+    Serial.println( 1 << 3, BIN);
+    Serial.println( 65535 - 1 << 3, BIN);
+    Serial.println( 65535 - (1 << 3), BIN);
     for (int i = 0; i < NUMSTEPS; i++)
     {
-      
+
       Serial.print(i);
       Serial.print(", ");
       Serial.print(st[i].cmd);
@@ -237,9 +225,9 @@ void loop() {
 
 
   if (TESTMODE) {
-      st[0].cmd = sin(0.001*float(millis())/40.*3.1415)*360;
-      st[1].cmd = cos(0.001*float(millis())/40.*3.1415)*360;
-    }
+    st[0].set_cmd( sin(0.001 * float(millis()) / 40.*3.1415) * 360);
+    st[1].set_cmd( cos(0.001 * float(millis()) / 40.*3.1415) * 360);
+  }
   else {
 
     int packetSize = Udp.parsePacket();
@@ -247,8 +235,8 @@ void loop() {
       // read the packet into packetBufffer
       Udp.read(packetBuffer, UDP_TX_PACKET_MAX_SIZE);
       fly = (Fly*)packetBuffer;
-      st[0].cmd = fly->pitch;
-      st[1].cmd = fly->bank;
+      st[0].set_cmd(fly->pitch);
+      st[1].set_cmd(fly->bank);
     }
     if (print_)
     {
@@ -289,5 +277,6 @@ void loop() {
 
 
 }
+
 
 
