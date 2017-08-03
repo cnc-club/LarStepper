@@ -1,9 +1,9 @@
 #define NUMSTEPS 4
 #define TIMER_CLOCK_FREQ 2000000.0 //250kHz for /64 prescale from 16MHz
 #define PRINT true
-#define TESTMODE true
+#define TESTMODE false
 #define TIMER_STEP 150
-#define STEP_TIME 160
+#define STEP_TIME 300
 
 
 #include <SPI.h>         // needed for Arduino versions later than 0018
@@ -65,12 +65,12 @@ class LarStepper
     volatile int homing_dir;
     volatile long pos = 0;
     volatile float v = 0.;
-    float a = 100.;
+    float a = 200.;
     float cmd = 0;
-    float scale = 100.;
-    float maxv = 100.;
-    float minl = -1000000000000;
-    float maxl = -1000000000000;
+    float scale = 500.;
+    float maxv = 200.;
+    float minl = -1000000000;
+    float maxl = 1000000000;
     float e = 0;
     float p = 0;
     float t = 0;
@@ -87,9 +87,11 @@ LarStepper::LarStepper(float _scale, int _step, int _dir, int _home)
   home_pin = 1 << _home;
   homing_dir = 1;
   scale = _scale;
-  pinMode(step_pin, OUTPUT);
-  pinMode(dir_pin, OUTPUT);
-  pinMode(home_pin, INPUT);
+  pinMode(_step, OUTPUT);
+  pinMode(_dir, OUTPUT);
+  digitalWrite(_dir, HIGH);
+  digitalWrite(_step, HIGH);
+  pinMode(_home, INPUT);
 }
 
 void LarStepper::set_cmd(float c)
@@ -98,7 +100,7 @@ void LarStepper::set_cmd(float c)
   else if (c < minl) cmd = minl;
   else cmd = c;
   if (module > 0) {
-    cmd =  float( (long(cmd * 1000)) % 360000 )/1000 ;
+    cmd =  float( (long(cmd * 1000)) % 360000 ) / 1000 ;
   }
 }
 
@@ -109,7 +111,7 @@ void LarStepper::update_freq()
   // Get pos error
   if (module > 0)
   {
-    p = float(long(p * 1000)%360000)/1000;
+    p = float(long(p * 1000) % 360000) / 1000;
     float e1 = cmd - p + 360;
     float e2 = cmd - p;
     float e3 = cmd - p - 360;
@@ -152,16 +154,16 @@ void LarStepper::update_freq()
   if (v < -maxv) v = -maxv;
   if (v > maxv) v = maxv;
   // step timer mks
-  if ( abs(v) < 0.001 ) timer = 1000000000;
+  if ( abs(v) < 0.001 ) timer =  1000000000;
   else timer = abs(long(1000000 / ( v * scale )));
 }
 
 
 LarStepper st[4] = {
-  LarStepper(10., 1, 2, 3),
-  LarStepper(10., 4, 5, 6),
-  LarStepper(10., 7, 8, 9),
-  LarStepper(10., 7, 8, 9)
+  LarStepper(10., 2, 3, A1),
+  LarStepper(10., 4, 5, A2),
+  LarStepper(10., 6, 7, A3),
+  LarStepper(10., 8, 9, A4)
 };
 
 
@@ -177,11 +179,15 @@ ISR(TIMER2_OVF_vect) {
     if (st[i].counter <= STEP_TIME ) {
       pins |= st[i].step_pin;
     }
+    else if (st[i].counter <= 2 * STEP_TIME )
+    {
+      pins &= 65535 - st[i].step_pin;
+    }
     else
     {
       pins &= 65535 - st[i].step_pin;
       if (st[i].counter >= st[i].timer) {
-        st[i].counter = st[i].counter % st[i].timer;
+        st[i].counter = 0;//st[i].counter % st[i].timer;
         if (st[i].v > 0) st[i].pos += 1;
         else st[i].pos -= 1;
         pins |= st[i].step_pin;
@@ -227,8 +233,7 @@ void loop() {
   {
     Serial.println(latency);
     Serial.println(pins, BIN);
-    Serial.println( 1 << 3, BIN);
-    Serial.println( 65535 - 1 << 3, BIN);
+    Serial.println(pins&( 65535 & st[1].dir_pin), BIN);
     Serial.println( 65535 - (1 << 3), BIN);
     for (int i = 0; i < NUMSTEPS; i++)
     {
@@ -250,8 +255,21 @@ void loop() {
 
 
   if (TESTMODE) {
-    st[0].set_cmd( sin(0.001 * float(millis()) / 40.*3.1415) * 360);
-    st[1].set_cmd( cos(0.001 * float(millis()) / 40.*3.1415) * 360);
+    int interval = 15;
+    if (millis() % (2 * interval * 1000) < interval * 1000) {
+      st[0].set_cmd(0);
+      st[1].set_cmd(0);
+      st[2].set_cmd(0);
+      st[3].set_cmd(0);
+    } else {
+      st[0].set_cmd(10);
+      st[1].set_cmd(100);
+      st[2].set_cmd(200);
+      st[3].set_cmd(300);
+    }
+    //st[0].set_cmd( sin(0.001 * float(millis()) / 40.*3.1415) * 360);
+    //st[1].set_cmd( cos(0.001 * float(millis()) / 40.*3.1415) * 360);
+    //st[2].set_cmd( cos(0.001 * float(millis()) / 40.*3.1415) * 360);
   }
   else {
 
@@ -260,20 +278,25 @@ void loop() {
       // read the packet into packetBufffer
       Udp.read(packetBuffer, UDP_TX_PACKET_MAX_SIZE);
       fly = (Fly*)packetBuffer;
-      st[0].set_cmd(fly->pitch);
-      st[1].set_cmd(fly->bank);
+      st[0].set_cmd(fly->pitch*180./3.1415);
+      st[1].set_cmd(fly->bank *180./3.1415);
+
+      if (print_ & false)
+      {
+        Serial.println(packetBuffer);
+        Serial.println(packetSize);
+        Serial.println("Contents:");
+        Serial.println(packetBuffer);
+        Serial.println(fly->sig);
+        Serial.println(fly->pitch);
+        Serial.println(fly->bank);
+        Serial.println(fly->z);
+        Serial.println(fly->state);
+        Serial.println(fly->sum);
+      }
+
     }
-    if (print_)
-    {
-      Serial.println("Contents:");
-      Serial.println(fly->sig);
-      Serial.println(fly->pitch);
-      Serial.println(fly->bank);
-      Serial.println(fly->z);
-      Serial.println(fly->state);
-      Serial.println(fly->sum);
-      //    delay(100);
-    }
+
   }
 
 
@@ -302,6 +325,3 @@ void loop() {
 
 
 }
-
-
-
