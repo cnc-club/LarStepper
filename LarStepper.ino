@@ -1,16 +1,18 @@
 #define NUMSTEPS 4
 #define TIMER_CLOCK_FREQ 2000000.0 //250kHz for /64 prescale from 16MHz
 #define PRINT true
-#define TESTMODE false
-#define TIMER_STEP 150
-#define STEP_TIME 300
+#define TESTMODE true
+#define TIMER_STEP 125
+#define STEP_TIME 200
 
+#define FREQ 7813 // from test
 
 #include <SPI.h>         // needed for Arduino versions later than 0018
 #include <Ethernet.h>
 #include <EthernetUdp.h>         // UDP library from: bjoern@cs.stanford.edu 12/30/2008
 
-byte mac[] = {0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0xED};
+byte mac[] = {
+  0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0xED};
 IPAddress ip(10, 0, 1, 5);
 unsigned int localPort = 8888;      // local port to listen on
 
@@ -24,13 +26,13 @@ float period;
 long time_;
 char packetBuffer[UDP_TX_PACKET_MAX_SIZE];  //buffer to hold incoming packet,
 EthernetUDP Udp;
-
+volatile long count;
 
 unsigned char SetupTimer2(float timeoutFrequency) {
   unsigned char result; //The value to load into the timer to control the timeout interval.
   result = (int)((257.0 - (TIMER_CLOCK_FREQ / timeoutFrequency)) + 0.5); //the 0.5 is for rounding;
   TCCR2A = 0;
-  TCCR2B = 1 << CS22 | 0 << CS21 | 0 << CS20;
+  TCCR2B = 0 << CS22 | 1 << CS21 | 0 << CS20;
   TIMSK2 = 1 << TOIE2;
   TCNT2 = result;
   return (result);
@@ -51,32 +53,35 @@ Fly *fly;
 
 class LarStepper
 {
-  public:
-    LarStepper(float _scale, int _step, int _dir, int _home);
-    void set_cmd(float c);
-    void update_freq();
-    void dash();
-    int step_pin;
-    int dir_pin;
-    int home_pin;
-    volatile long timer;
-    volatile long counter;
-    volatile long home;
-    volatile int homing_dir;
-    volatile long pos = 0;
-    volatile float v = 0.;
-    float a = 200.;
-    float cmd = 0;
-    float scale = 500.;
-    float maxv = 200.;
-    float minl = -1000000000;
-    float maxl = 1000000000;
-    float e = 0;
-    float p = 0;
-    float t = 0;
-    float t1;
-    float module = 360.;
+public:
+  LarStepper(float _scale, int _step, int _dir, int _home);
+  void set_cmd(float c);
+  void update_freq();
+  void print();
+  int step_pin;
+  int dir_pin;
+  int home_pin;
+  volatile long timer;
+  volatile long counter;
+  volatile long home;
+  volatile int homing_dir;
+  volatile long pos = 0;
+  volatile float v = 0.;
+  float a = 200.;
+  float cmd = 0;
+  float old_cmd;
+  float scale = 12.5;
+  float maxv = 200.;
+  float minl = -1000000000;
+  float maxl = 1000000000;
+  float e = 0;
+  float p = 0;
+  float t = 0;
+  float t1;
+  float module = 360.;
 };
+
+
 
 LarStepper::LarStepper(float _scale, int _step, int _dir, int _home)
 {
@@ -94,6 +99,20 @@ LarStepper::LarStepper(float _scale, int _step, int _dir, int _home)
   pinMode(_home, INPUT);
 }
 
+
+void LarStepper::print(){
+  Serial.print("cmd:");
+  Serial.print(cmd);
+  Serial.print(", pos");
+  Serial.print(p);
+  Serial.print(", err");
+  Serial.print(e);
+  Serial.print(", v");
+  Serial.print(v);
+  Serial.println(" ");
+}
+
+
 void LarStepper::set_cmd(float c)
 {
   if (c > maxl) cmd = maxl;
@@ -107,7 +126,8 @@ void LarStepper::set_cmd(float c)
 
 void LarStepper::update_freq()
 {
-  p = float(pos) / scale;
+  // p = float(pos) / scale;
+
   // Get pos error
   if (module > 0)
   {
@@ -130,25 +150,57 @@ void LarStepper::update_freq()
     e = cmd - p;
   }
 
-  if (v * e < 0)
-  {
-    if (v > 0) v -= a * period;
-    else v += a * period;
-  }
-  else {
-    t = abs(v / a);
-    t1 = (abs(v) - a * period) * t - a * t * t * .5 ;
+  print(); 
+  float c = e+p; //new cmd 
 
-    if (abs(t1) < abs(e))
-    { // accel
-      if (v > 0) v += a * period;
-      else v -= a * period;
+  float vel_cmd = (c - old_cmd) / period;
+  old_cmd = c;
+  float match_ac = (v < vel_cmd ? a : -a);
+  float match_time = (vel_cmd - v) / match_ac;
+  float avg_v = (vel_cmd + v) * 0.5;
+  float est_out = p + avg_v * match_time;
+  float est_cmd = c + vel_cmd * (match_time - 1.5 * period);
+  float est_err = est_out - est_cmd;
+  Serial.print(match_time);
+  Serial.print("");
+  Serial.print(est_err);
+  Serial.print("");
+  Serial.print(match_time);
+  Serial.print("");
+  Serial.print(match_time);
+  Serial.print("");
+
+
+  if (match_time < period){
+    if (abs(est_err)<0.01){
+      v = vel_cmd;
+      Serial.print("*");
+    } 
+    else {
+      float new_v = vel_cmd - 0.5*est_err/period;
+      if (new_v > v+a*period){
+        v += a*period;
+      }      
+      else if (new_v < v-a*period){
+        v -= a*period;
+      }      
+      else {
+        v = new_v;
+        Serial.print("$");
+        Serial.print(new_v);
+      }
+      Serial.print("*!");  
     }
-    else
-    { //deccel
-      if (v > 0) v -= a * period;
-      else v += a * period;
+  }	
+  else{
+
+    float dv = -2.0 * match_ac * period;
+    float dp = dv * match_time;
+    if (abs(est_err + dp * 2.0) < abs(est_err)){
+      match_ac = -match_ac;
     }
+    Serial.print("!!*");
+    v += match_ac*period;
   }
 
   if (v < -maxv) v = -maxv;
@@ -156,6 +208,7 @@ void LarStepper::update_freq()
   // step timer mks
   if ( abs(v) < 0.001 ) timer =  1000000000;
   else timer = abs(long(1000000 / ( v * scale )));
+  p += v*period;
 }
 
 
@@ -164,15 +217,14 @@ LarStepper st[4] = {
   LarStepper(10., 4, 5, A2),
   LarStepper(10., 6, 7, A3),
   LarStepper(10., 8, 9, A4)
-};
+  };
 
 
-volatile int pins;
+  volatile int pins;
 //Timer2 overflow interrupt vector handler
 ISR(TIMER2_OVF_vect) {
   pins = PINB << 8 | PIND;
-
-
+  count += 1;
   for (int i = 0; i < NUMSTEPS; i++)
   {
     st[i].counter += TIMER_STEP;
@@ -211,15 +263,26 @@ void setup() {
   Udp.begin(localPort);
 
   noInterrupts();
-  timerLoadValue = SetupTimer2(80000);
+  timerLoadValue = SetupTimer2(40000);
   interrupts();
+  for (int i=0;i<NUMSTEPS;i++){
+    Serial.print("Stepper ");
+    Serial.print(i);
+    Serial.print(" max velocity: ");
+    Serial.println(FREQ/4/st[i].scale);
+  }
 }
 
-
+long period_count = 0;
+float max_period = 0;
 void loop() {
+  period_count += 1;
   period = (micros() - time_) * 0.000001;
+  if (period>max_period && millis()>2000){
+    max_period = period;
+  }
   time_ = micros();
-  for  (int i = 0; i < NUMSTEPS; i++)
+  for  (int i = 0; i < 1;i++)//NUMSTEPS; i++)
   {
     st[i].update_freq();
   }
@@ -227,46 +290,53 @@ void loop() {
   if (print__ < millis() && PRINT ) {
     print__ = millis() + 400;
     print_ = true;
+    Serial.println();
   }
 
+  if (print_){
+    Serial.print("Average Hz of the base thread:");
+    Serial.print(float(count)/(millis())*1000);
+    Serial.print(" ~ ");
+    Serial.print(float(millis())/count);
+    Serial.println("ms");
+
+    Serial.print("Current period (ms):");
+    Serial.println(period*1000);
+    Serial.print("Average period (ms):");
+    Serial.println(millis()/float(period_count));
+    Serial.print("Max period (ms):");
+    Serial.println(max_period*1000);
+
+  }
   if (print_)
   {
+    Serial.print("Latency: ");
     Serial.println(latency);
+    Serial.print("Pins: ");
     Serial.println(pins, BIN);
-    Serial.println(pins&( 65535 & st[1].dir_pin), BIN);
-    Serial.println( 65535 - (1 << 3), BIN);
     for (int i = 0; i < NUMSTEPS; i++)
     {
-
-      Serial.print(i);
-      Serial.print(", ");
-      Serial.print(st[i].cmd);
-      Serial.print(", ");
-      Serial.print(st[i].p);
-      Serial.print(", ");
-      Serial.print(st[i].e);
-      Serial.print(", ");
-      Serial.print(st[i].v);
-      Serial.println(", ");
+      st[i].print();
     }
-    Serial.println(", ");
   }
 
 
 
   if (TESTMODE) {
-    int interval = 15;
-    if (millis() % (2 * interval * 1000) < interval * 1000) {
+    int interval = 6;
+    if (millis() % (2 * interval * 1000) > interval * 1000) {
       st[0].set_cmd(0);
       st[1].set_cmd(0);
       st[2].set_cmd(0);
       st[3].set_cmd(0);
-    } else {
-      st[0].set_cmd(10);
+    } 
+    else {
+      st[0].set_cmd(100  );
       st[1].set_cmd(100);
       st[2].set_cmd(200);
       st[3].set_cmd(300);
     }
+    st[0].set_cmd(sin(0.001*millis()) *100 )
     //st[0].set_cmd( sin(0.001 * float(millis()) / 40.*3.1415) * 360);
     //st[1].set_cmd( cos(0.001 * float(millis()) / 40.*3.1415) * 360);
     //st[2].set_cmd( cos(0.001 * float(millis()) / 40.*3.1415) * 360);
@@ -300,28 +370,17 @@ void loop() {
   }
 
 
-  /* Serial.println(latency);
-    Serial.print(", cmd");
-    Serial.print(st[0].cmd);
-    Serial.print(", t1 ");
-    Serial.print(st[0].t1);
-    Serial.print(", t");
-    Serial.print(st[0].t);
-    Serial.print(", p");
-    Serial.print(st[0].p);
-    Serial.print(", e");
-    Serial.print(st[0].e);
-    Serial.print(", v");
-    Serial.print(st[0].v);
-    Serial.print(", timer ");
-    Serial.print(st[0].timer);
-    Serial.print(", pos ");
-    Serial.println(st[0].pos);
-    Serial.print(", time ");
-    Serial.print(time_);
-    Serial.print(", period ");
-    Serial.println(period);*/
-
-
 
 }
+
+
+
+
+
+
+
+
+
+
+
+
