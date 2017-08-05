@@ -12,7 +12,8 @@
 #include <EthernetUdp.h>         // UDP library from: bjoern@cs.stanford.edu 12/30/2008
 
 byte mac[] = {
-  0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0xED};
+  0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0xED
+};
 IPAddress ip(10, 0, 1, 5);
 unsigned int localPort = 8888;      // local port to listen on
 
@@ -53,32 +54,33 @@ Fly *fly;
 
 class LarStepper
 {
-public:
-  LarStepper(float _scale, int _step, int _dir, int _home);
-  void set_cmd(float c);
-  void update_freq();
-  void print();
-  int step_pin;
-  int dir_pin;
-  int home_pin;
-  volatile long timer;
-  volatile long counter;
-  volatile long home;
-  volatile int homing_dir;
-  volatile long pos = 0;
-  volatile float v = 0.;
-  float a = 200.;
-  float cmd = 0;
-  float old_cmd;
-  float scale = 12.5;
-  float maxv = 200.;
-  float minl = -1000000000;
-  float maxl = 1000000000;
-  float e = 0;
-  float p = 0;
-  float t = 0;
-  float t1;
-  float module = 360.;
+  public:
+    LarStepper(float _scale, int _step, int _dir, int _home);
+    void set_cmd(float c);
+    void update_freq();
+    void print();
+    int step_pin;
+    int dir_pin;
+    int home_pin;
+    volatile long timer;
+    volatile long counter;
+    volatile long home;
+    volatile bool homing_dir;
+    volatile bool homed = false;
+    volatile long pos = 0;
+    volatile float v = 0.;
+    float a = 200.;
+    float cmd = 0;
+    float old_cmd;
+    float scale = 12.5;
+    float maxv = 200.;
+    float minl = -1000000000;
+    float maxl = 1000000000;
+    float e = 0;
+    float p = 0;
+    float t = 0;
+    float t1;
+    float module = 360.;
 };
 
 
@@ -100,7 +102,7 @@ LarStepper::LarStepper(float _scale, int _step, int _dir, int _home)
 }
 
 
-void LarStepper::print(){
+void LarStepper::print() {
   Serial.print("cmd:");
   Serial.print(cmd);
   Serial.print(", pos");
@@ -109,7 +111,9 @@ void LarStepper::print(){
   Serial.print(e);
   Serial.print(", v");
   Serial.print(v);
-  Serial.println(" ");
+  Serial.print(", max freq:");
+  Serial.print(scale*maxv);
+  Serial.println(" ");  
 }
 
 
@@ -126,7 +130,7 @@ void LarStepper::set_cmd(float c)
 
 void LarStepper::update_freq()
 {
-  // p = float(pos) / scale;
+  p = float(pos) / scale;
 
   // Get pos error
   if (module > 0)
@@ -150,8 +154,7 @@ void LarStepper::update_freq()
     e = cmd - p;
   }
 
-  print(); 
-  float c = e+p; //new cmd 
+  float c = e + p; //new cmd
 
   float vel_cmd = (c - old_cmd) / period;
   old_cmd = c;
@@ -161,46 +164,32 @@ void LarStepper::update_freq()
   float est_out = p + avg_v * match_time;
   float est_cmd = c + vel_cmd * (match_time - 1.5 * period);
   float est_err = est_out - est_cmd;
-  Serial.print(match_time);
-  Serial.print("");
-  Serial.print(est_err);
-  Serial.print("");
-  Serial.print(match_time);
-  Serial.print("");
-  Serial.print(match_time);
-  Serial.print("");
 
-
-  if (match_time < period){
-    if (abs(est_err)<0.01){
+  if (match_time < period) {
+    if (abs(est_err) < 0.01) {
       v = vel_cmd;
-      Serial.print("*");
-    } 
+    }
     else {
-      float new_v = vel_cmd - 0.5*est_err/period;
-      if (new_v > v+a*period){
-        v += a*period;
-      }      
-      else if (new_v < v-a*period){
-        v -= a*period;
-      }      
+      float new_v = vel_cmd - 0.5 * est_err / period;
+      if (new_v > v + a * period) {
+        v += a * period;
+      }
+      else if (new_v < v - a * period) {
+        v -= a * period;
+      }
       else {
         v = new_v;
-        Serial.print("$");
-        Serial.print(new_v);
       }
-      Serial.print("*!");  
     }
-  }	
-  else{
+  }
+  else {
 
     float dv = -2.0 * match_ac * period;
     float dp = dv * match_time;
-    if (abs(est_err + dp * 2.0) < abs(est_err)){
+    if (abs(est_err + dp * 2.0) < abs(est_err)) {
       match_ac = -match_ac;
     }
-    Serial.print("!!*");
-    v += match_ac*period;
+    v += match_ac * period;
   }
 
   if (v < -maxv) v = -maxv;
@@ -208,25 +197,45 @@ void LarStepper::update_freq()
   // step timer mks
   if ( abs(v) < 0.001 ) timer =  1000000000;
   else timer = abs(long(1000000 / ( v * scale )));
-  p += v*period;
+  //p += v*period;
 }
 
 
 LarStepper st[4] = {
-  LarStepper(10., 2, 3, A1),
-  LarStepper(10., 4, 5, A2),
-  LarStepper(10., 6, 7, A3),
-  LarStepper(10., 8, 9, A4)
-  };
+  LarStepper(16., 2, 3, A1),
+  LarStepper(16., 4, 5, A2),
+  LarStepper(16., 6, 7, A3),
+  LarStepper(16., 8, 9, A4)
+};
 
 
-  volatile int pins;
+volatile int pins;
 //Timer2 overflow interrupt vector handler
 ISR(TIMER2_OVF_vect) {
   pins = PINB << 8 | PIND;
   count += 1;
+
   for (int i = 0; i < NUMSTEPS; i++)
   {
+    // home
+    if (!st[i].homed && ((pins & st[i].home_pin) > 0) && ( (st[i].v > 0) == st[i].homing_dir ) ) {
+      st[i].pos = st[i].home;
+      st[i].homed = true;
+    }
+
+
+    // DIR  TODO DIR Set time
+    if (
+      (((pins & st[i].dir_pin) > 0) && (st[i].v < 0)) ||
+      (((pins & st[i].dir_pin) == 0) && (st[i].v > 0))
+    ) // have to change dir pin
+    {
+      if (st[i].v > 0) pins |= st[i].dir_pin;
+      else pins &= 65535 -  st[i].dir_pin;
+      continue; // skip to next interrupt for dir setup delay.
+    }
+
+
     st[i].counter += TIMER_STEP;
     if (st[i].counter <= STEP_TIME ) {
       pins |= st[i].step_pin;
@@ -244,10 +253,6 @@ ISR(TIMER2_OVF_vect) {
         else st[i].pos -= 1;
         pins |= st[i].step_pin;
       }
-
-      // DIR  TODO DIR Set time
-      if (st[i].v > 0) pins |= st[i].dir_pin;
-      else pins &= 65535 -  st[i].dir_pin;
     }
   }
 
@@ -265,11 +270,11 @@ void setup() {
   noInterrupts();
   timerLoadValue = SetupTimer2(40000);
   interrupts();
-  for (int i=0;i<NUMSTEPS;i++){
+  for (int i = 0; i < NUMSTEPS; i++) {
     Serial.print("Stepper ");
     Serial.print(i);
     Serial.print(" max velocity: ");
-    Serial.println(FREQ/4/st[i].scale);
+    Serial.println(FREQ / 4 / st[i].scale);
   }
 }
 
@@ -278,11 +283,11 @@ float max_period = 0;
 void loop() {
   period_count += 1;
   period = (micros() - time_) * 0.000001;
-  if (period>max_period && millis()>2000){
+  if (period > max_period && millis() > 2000) {
     max_period = period;
   }
   time_ = micros();
-  for  (int i = 0; i < 1;i++)//NUMSTEPS; i++)
+  for  (int i = 0; i < NUMSTEPS; i++)
   {
     st[i].update_freq();
   }
@@ -293,19 +298,19 @@ void loop() {
     Serial.println();
   }
 
-  if (print_){
+  if (print_) {
     Serial.print("Average Hz of the base thread:");
-    Serial.print(float(count)/(millis())*1000);
+    Serial.print(float(count) / (millis()) * 1000);
     Serial.print(" ~ ");
-    Serial.print(float(millis())/count);
+    Serial.print(float(millis()) / count);
     Serial.println("ms");
 
     Serial.print("Current period (ms):");
-    Serial.println(period*1000);
+    Serial.println(period * 1000);
     Serial.print("Average period (ms):");
-    Serial.println(millis()/float(period_count));
+    Serial.println(millis() / float(period_count));
     Serial.print("Max period (ms):");
-    Serial.println(max_period*1000);
+    Serial.println(max_period * 1000);
 
   }
   if (print_)
@@ -329,17 +334,17 @@ void loop() {
       st[1].set_cmd(0);
       st[2].set_cmd(0);
       st[3].set_cmd(0);
-    } 
+    }
     else {
-      st[0].set_cmd(100  );
+      st[0].set_cmd(100);
       st[1].set_cmd(100);
       st[2].set_cmd(200);
       st[3].set_cmd(300);
     }
-    st[0].set_cmd(sin(0.001*millis()) *100 )
-    //st[0].set_cmd( sin(0.001 * float(millis()) / 40.*3.1415) * 360);
-    //st[1].set_cmd( cos(0.001 * float(millis()) / 40.*3.1415) * 360);
-    //st[2].set_cmd( cos(0.001 * float(millis()) / 40.*3.1415) * 360);
+    st[0].set_cmd(sin(0.001 * millis()) * 100 );
+    st[1].set_cmd(sin(0.0002 * millis()) * 100 );
+    st[2].set_cmd(sin(0.0003 * millis()) * 100 );
+    st[3].set_cmd(sin(0.0004 * millis()) * 100 );
   }
   else {
 
@@ -348,8 +353,8 @@ void loop() {
       // read the packet into packetBufffer
       Udp.read(packetBuffer, UDP_TX_PACKET_MAX_SIZE);
       fly = (Fly*)packetBuffer;
-      st[0].set_cmd(fly->pitch*180./3.1415);
-      st[1].set_cmd(fly->bank *180./3.1415);
+      st[0].set_cmd(fly->pitch * 180. / 3.1415);
+      st[1].set_cmd(fly->bank * 180. / 3.1415);
 
       if (print_ & false)
       {
