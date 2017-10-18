@@ -1,15 +1,22 @@
 #define NUMSTEPS 4
 #define TIMER_CLOCK_FREQ 2000000.0 //250kHz for /64 prescale from 16MHz
 #define PRINT true
-#define TESTMODE true
+#define TESTMODE false
 #define TIMER_STEP 125
 #define STEP_TIME 200
-
+#define HOME_BUTTON A0
+#define OFF_BUTTON A1
 #define FREQ 7813 // from test
+#define STATE_OFF 0
+#define STATE_ON 1
+
+
 
 #include <SPI.h>         // needed for Arduino versions later than 0018
 #include <Ethernet.h>
 #include <EthernetUdp.h>         // UDP library from: bjoern@cs.stanford.edu 12/30/2008
+
+int STATE = STATE_OFF;
 
 byte mac[] = {
   0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0xED
@@ -59,6 +66,7 @@ class LarStepper
     void set_cmd(float c);
     void update_freq();
     void print();
+    void check_home();
     int step_pin;
     int dir_pin;
     int home_pin;
@@ -81,6 +89,7 @@ class LarStepper
     float t = 0;
     float t1;
     float module = 360.;
+    float deadband = 0.1;
 };
 
 
@@ -91,7 +100,7 @@ LarStepper::LarStepper(float _scale, int _step, int _dir, int _home)
   step_pin = 1 << _step;
   dir_pin = 1 << _dir;
   home = 0;
-  home_pin = 1 << _home;
+  home_pin = _home; //1 << _home;
   homing_dir = 1;
   scale = _scale;
   pinMode(_step, OUTPUT);
@@ -99,6 +108,7 @@ LarStepper::LarStepper(float _scale, int _step, int _dir, int _home)
   digitalWrite(_dir, HIGH);
   digitalWrite(_step, HIGH);
   pinMode(_home, INPUT);
+  digitalWrite(_home, HIGH);
 }
 
 
@@ -112,8 +122,8 @@ void LarStepper::print() {
   Serial.print(", v");
   Serial.print(v);
   Serial.print(", max freq:");
-  Serial.print(scale*maxv);
-  Serial.println(" ");  
+  Serial.print(scale * maxv);
+  Serial.println(" ");
 }
 
 
@@ -195,19 +205,29 @@ void LarStepper::update_freq()
   if (v < -maxv) v = -maxv;
   if (v > maxv) v = maxv;
   // step timer mks
-  if ( abs(v) < 0.001 ) timer =  1000000000;
+  if ( abs(e) < deadband && abs(v) < 0.1) timer =  1000000000;
+  else if ( abs(v) < 0.001 ) timer =  1000000000;
   else timer = abs(long(1000000 / ( v * scale )));
   //p += v*period;
 }
 
 
 LarStepper st[4] = {
-  LarStepper(16., 2, 3, A1),
-  LarStepper(16., 4, 5, A2),
-  LarStepper(16., 6, 7, A3),
-  LarStepper(16., 8, 9, A4)
+  LarStepper(10.5555555, 9, 8, A5),
+  LarStepper(5.583333327, 7, 6, A4),
+  LarStepper(8., 5, 4, A2),
+  LarStepper(8., 1, 1, A4)
 };
 
+
+void LarStepper::check_home() {
+  if (!homed && (digitalRead(home_pin) == HIGH) && (digitalRead(home_pin) == HIGH) && (digitalRead(home_pin) == HIGH)
+      && (digitalRead(home_pin) == HIGH) && (digitalRead(home_pin) == HIGH)
+     ) {
+    pos = home;
+    homed = true;
+  }
+}
 
 volatile int pins;
 //Timer2 overflow interrupt vector handler
@@ -217,11 +237,11 @@ ISR(TIMER2_OVF_vect) {
 
   for (int i = 0; i < NUMSTEPS; i++)
   {
-    // home
-    if (!st[i].homed && ((pins & st[i].home_pin) > 0) && ( (st[i].v > 0) == st[i].homing_dir ) ) {
+    /*// home
+      if (!st[i].homed && ((pins & st[i].home_pin) > 0) && ( (st[i].v > 0) == st[i].homing_dir ) ) {
       st[i].pos = st[i].home;
       st[i].homed = true;
-    }
+      }*/
 
 
     // DIR  TODO DIR Set time
@@ -266,20 +286,127 @@ void setup() {
 
   Ethernet.begin(mac, ip);
   Udp.begin(localPort);
+  pinMode(HOME_BUTTON, INPUT);
+  digitalWrite(HOME_BUTTON, HIGH);
+
+  pinMode(OFF_BUTTON, INPUT);
+  digitalWrite(OFF_BUTTON, HIGH);
+
 
   noInterrupts();
   timerLoadValue = SetupTimer2(40000);
-  interrupts();
   for (int i = 0; i < NUMSTEPS; i++) {
     Serial.print("Stepper ");
     Serial.print(i);
     Serial.print(" max velocity: ");
     Serial.println(FREQ / 4 / st[i].scale);
   }
+
+  st[2].pos = -150 * st[2].scale;
+  st[2].pos = -150 * st[2].scale;
+  st[2].a = 2000;
+  st[2].maxv = 200;
+  st[2].minl = -150;
+  st[2].maxl = 150;
+  st[2].module = 360;
+  st[2].home = -150 * st[2].scale;
+
+  st[0].home = 17 * st[0].scale;
+  st[1].home = 15 * st[1].scale;
+
+  interrupts();
+  st[0].a = 300;
 }
 
 long period_count = 0;
 float max_period = 0;
+long pack_count = 0;
+
+
+void print_state() {
+  Serial.println();
+  Serial.print("Packet count: ");
+  Serial.println(pack_count);
+  Serial.println("Coords: ");
+  Serial.print("   P = ");
+  Serial.println(fly->pitch);
+  Serial.print("   B = ");
+  Serial.println(fly->bank);
+  Serial.print("   Z = ");
+  Serial.println(fly->z);
+  Serial.println("Steppers: ");
+  st[0].print();
+  st[1].print();
+  st[2].print();
+  st[3].print();
+}
+
+float punch = 0;
+int home_axis = 4;
+
+
+bool check_home() {
+  //Serial.println(home_axis);
+  if ( (STATE == STATE_OFF)
+       && (digitalRead(HOME_BUTTON) == LOW)
+       && (digitalRead(HOME_BUTTON) == LOW)
+       && (digitalRead(HOME_BUTTON) == LOW)
+     ) {
+    STATE = STATE_ON;    
+  }
+
+
+  if (home_axis > 3) {
+    if (digitalRead(HOME_BUTTON) == LOW) {
+      home_axis = 3;
+    }
+  }
+  if (home_axis == 3) {
+    st[0].check_home();
+    st[0].set_cmd(st[0].p + 0.2);
+    if (st[0].homed)
+    {
+      st[0].set_cmd(0);
+      home_axis = 2;
+    }
+  }
+  if (home_axis == 2) {
+    st[1].check_home();
+    st[1].set_cmd(st[1].p + 0.2);
+    if (st[1].homed)
+    {
+      st[1].set_cmd(0);
+      home_axis = 1;
+    }
+  }
+  if (home_axis == 1) {
+    st[2].check_home();
+    st[2].set_cmd(st[2].p - 0.2);
+    if (st[2].homed)
+    {
+      st[2].set_cmd(0);
+      home_axis = 0;
+      STATE = STATE_ON;
+    }
+
+  }
+
+  return home_axis == 0;
+}
+
+
+bool check_off() {
+  if (digitalRead(OFF_BUTTON) == LOW) {
+    STATE = STATE_OFF;
+
+    if (st[0].homed) st[0].set_cmd(0);
+    if (st[1].homed) st[1].set_cmd(0);
+    if (st[2].homed) st[2].set_cmd(-130);
+    if (st[3].homed) st[3].set_cmd(0);
+  }
+  return STATE == STATE_ON;
+}
+
 void loop() {
   period_count += 1;
   period = (micros() - time_) * 0.000001;
@@ -291,14 +418,29 @@ void loop() {
   {
     st[i].update_freq();
   }
+
+  if (!check_home())  {
+    Serial.print("Homing....");
+    Serial.println(home_axis);
+    return ; // go to the next loop
+  }
+
+  if (!check_off())  {
+    Serial.println("STATE is OFF");
+    return ; // go to the next loop
+  }
+
   print_ = false;
   if (print__ < millis() && PRINT ) {
     print__ = millis() + 400;
     print_ = true;
     Serial.println();
   }
-
-  if (print_) {
+  if (print_ )
+  {
+    print_state();
+  }
+  if (print_ and false) {
     Serial.print("Average Hz of the base thread:");
     Serial.print(float(count) / (millis()) * 1000);
     Serial.print(" ~ ");
@@ -313,7 +455,7 @@ void loop() {
     Serial.println(max_period * 1000);
 
   }
-  if (print_)
+  if (print_ and false)
   {
     Serial.print("Latency: ");
     Serial.println(latency);
@@ -341,20 +483,54 @@ void loop() {
       st[2].set_cmd(200);
       st[3].set_cmd(300);
     }
-Ssin(0.0003 * millis()) * 100 );
-    st[3].set_cmd(sin(0.0004 * millis()) * 100 );
+    st[0].set_cmd(sin(0.0001 * millis()) * 10 );
+    st[1].set_cmd(sin(0.000002 * millis()) * 10 );
+    st[2].set_cmd(sin(0.000003 * millis()) * 10 );
+    st[3].set_cmd(sin(0.000004 * millis()) * 10 );
   }
   else {
 
     int packetSize = Udp.parsePacket();
     if (packetSize) {
+      pack_count += 1;
       // read the packet into packetBufffer
       Udp.read(packetBuffer, UDP_TX_PACKET_MAX_SIZE);
       fly = (Fly*)packetBuffer;
-      st[0].set_cmd(fly->pitch * 180. / 3.1415);
-      st[1].set_cmd(fly->bank * 180. / 3.1415);
+      fly->pitch = fly->pitch * 180. / 3.1415;
+      fly->bank = fly->bank * 180. / 3.1415;
 
-      if (print_ & false)
+      if (fabs(fly->z) > 1. && punch == 0)
+      {
+        if (PRINT) {
+          Serial.println();
+          Serial.println("Punch start.");
+          Serial.println("Punch start.");
+          Serial.println("Punch start.");
+          Serial.println(fly->z);
+        }
+        if (fly->z > 100) fly->z = 100;
+        if (fly->z < -100) fly->z = -100;
+        st[2].set_cmd(fly->z);
+      }
+      st[0].set_cmd(fly->pitch);
+      st[1].set_cmd(fly->bank);
+
+      // punch update
+      if (fabs(punch) > 0  && (fabs(st[2].p - punch) < 3 || fabs(st[2].p > 120)) )
+      {
+        if (PRINT) {
+          Serial.println();
+          Serial.println("Punch back.");
+          Serial.println("Punch back.");
+          Serial.println("Punch back.");
+          Serial.println("Punch back.");
+        }
+        punch = 0;
+        st[2].set_cmd(0);
+      }
+
+
+      if (false and (pack_count % 10 == 0))
       {
         Serial.println(packetBuffer);
         Serial.println(packetSize);
