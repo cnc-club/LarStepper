@@ -341,9 +341,7 @@ void loop() {
       st[2].set_cmd(200);
       st[3].set_cmd(300);
     }
-    st[0].set_cmd(sin(0.001 * millis()) * 100 );
-    st[1].set_cmd(sin(0.0002 * millis()) * 100 );
-    st[2].set_cmd(sin(0.0003 * millis()) * 100 );
+Ssin(0.0003 * millis()) * 100 );
     st[3].set_cmd(sin(0.0004 * millis()) * 100 );
   }
   else {
